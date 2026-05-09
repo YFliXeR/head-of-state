@@ -11,13 +11,14 @@ config_version=5
 [application]
 
 config/name="Head of state"
-run/main_scene="uid://7jsvtdticuyl"
+run/main_scene="uid://dp7llsei0jjqv"
 config/features=PackedStringArray("4.6", "Forward Plus")
 config/icon="res://icon.svg"
 
 [autoload]
 
 Global="*uid://mep8le6f8vdb"
+SaveManager="*res://SaveManager.gd"
 
 [display]
 

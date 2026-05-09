@@ -53,11 +53,12 @@ func _build_ui():
 	center.add_child(spacer)
 
 	var play_btn = _make_btn("▶   NEW GAME", Color(0.15, 0.35, 0.15))
-	play_btn.pressed.connect(func():
-		Global.reset()
-		get_tree().change_scene_to_file("res://CountrySelect.tscn")
-	)
+	play_btn.pressed.connect(_on_new_game)
 	center.add_child(play_btn)
+
+	var load_btn = _make_btn("⬆   LOAD GAME", Color(0.20, 0.25, 0.35))
+	load_btn.pressed.connect(_on_load_game)
+	center.add_child(load_btn)
 
 	var how_btn = _make_btn("📖   HOW TO PLAY", Color(0.12, 0.18, 0.30))
 	how_btn.pressed.connect(_show_how_to_play)
@@ -184,3 +185,17 @@ func _build_how_to_play_panel():
 func _show_how_to_play():
 	find_child("HowOverlay", true, false).visible = true
 	find_child("HowPanel", true, false).visible = true
+
+func _on_new_game():
+	Global.reset()
+	get_tree().change_scene_to_file("res://GameModeSelect.tscn")
+
+func _on_load_game():
+	var save_manager = load("res://SaveManager.gd").new()
+	if save_manager.slot_exists(0):
+		if save_manager.load_game(0):
+			get_tree().change_scene_to_file("res://Maingame.tscn")
+		else:
+			push_error("Failed to load game")
+	else:
+		push_error("No save file found")

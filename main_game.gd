@@ -206,12 +206,15 @@ var portrait_paths: Array = []
 var selected_pin_country = null
 var event_log_node: VBoxContainer
 var stats_labels = {}
-var http_request: HTTPRequest
 var popup_open: bool = false
+var save_manager: Node
+var minister_cooldowns = [0, 0, 0, 0]
+var last_month_stats = {}
 
 func _ready():
 	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_MAXIMIZED)
 	portrait_paths = _get_portrait_paths()
+	save_manager = load("res://SaveManager.gd").new()
 	_build_ui()
 
 func _get_portrait_paths() -> Array:
@@ -236,6 +239,16 @@ func _pin_to_screen(px: float, py: float) -> Vector2:
 	var map_width = screen_size.x - map_x_start
 	var map_height = screen_size.y - map_y_start - 165.0
 	return Vector2(map_x_start + px * map_width, map_y_start + py * map_height)
+
+func _input(event: InputEvent):
+	if event is InputEventKey and event.pressed:
+		if event.keycode == KEY_S and event.ctrl_pressed:
+			if save_manager:
+				if save_manager.save_game(0):
+					_add_event("💾 Game saved successfully!", Color(0.3, 0.9, 0.5))
+				else:
+					_add_event("⚠️ Failed to save game.", Color(0.9, 0.3, 0.3))
+			get_tree().root.set_input_as_handled()
 
 func _build_ui():
 	var bg = ColorRect.new()
@@ -268,6 +281,8 @@ func _build_ui():
 	_build_election_panel()
 	_build_news_system()
 	_build_war_panel()
+	_build_save_ui()	
+	_build_briefing_panel()
 
 func _safe_find(node_name: String) -> Node:
 	var node = find_child(node_name, true, false)
@@ -339,6 +354,17 @@ func _build_top_bar():
 	next_btn.add_theme_font_size_override("font_size", 14)
 	next_btn.pressed.connect(_on_next_month)
 	add_child(next_btn)
+
+	var brief_btn = Button.new()
+	brief_btn.text = "📋 BRIEFING"
+	brief_btn.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	brief_btn.offset_left = -320
+	brief_btn.offset_top = 8
+	brief_btn.offset_right = -260
+	brief_btn.offset_bottom = 47
+	brief_btn.add_theme_font_size_override("font_size", 12)
+	brief_btn.pressed.connect(_show_briefing)
+	add_child(brief_btn)
 
 func _build_left_panel():
 	var panel = PanelContainer.new()
@@ -550,6 +576,13 @@ func _build_minister_bar():
 		report_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		info.add_child(report_lbl)
 
+		var consult_btn = Button.new()
+		consult_btn.name = "MinConsult" + str(i)
+		consult_btn.text = "💬 Consult (-$20B)"
+		consult_btn.add_theme_font_size_override("font_size", 11)
+		consult_btn.pressed.connect(_on_minister_consulted.bind(i))
+		info.add_child(consult_btn)
+
 func _on_pin_clicked(country: Dictionary):
 	if country["name"] == Global.selected_country["name"]:
 		_add_event("This is your country — " + country["name"] + ".")
@@ -581,9 +614,41 @@ func _on_diplo_action(action: String):
 	_update_stats()
 	find_child("CountryPanel", true, false).visible = false
 
+func _on_minister_consulted(minister_idx: int):
+	if Global.treasury < 20:
+		_add_event("⚠️ Cannot afford consultation (-$20B).", Color(0.9, 0.5, 0.3))
+		return
+
+	if minister_cooldowns[minister_idx] > 0:
+		_add_event("⏳ " + MINISTER_ROLES[minister_idx] + " is busy for " + str(minister_cooldowns[minister_idx]) + " more months.", Color(0.75, 0.75, 0.85))
+		return
+
+	Global.treasury -= 20
+	minister_cooldowns[minister_idx] = 3
+
+	match minister_idx:
+		0:  # Finance
+			Global.treasury += 50
+			_add_event("💰 Finance Minister: +$50B treasury granted!", Color(0.3, 0.9, 0.5))
+		1:  # Defense
+			Global.selected_country["military"] = clamp(Global.selected_country.get("military", 50) + 5, 5, 100)
+			_add_event("⚔️ Defense Minister: +5 military readiness!", Color(0.3, 0.9, 0.5))
+		2:  # Foreign Affairs
+			Global.approval = clamp(Global.approval + 5, 0, 100)
+			_add_event("🤝 Foreign Affairs Minister: +5 approval!", Color(0.3, 0.9, 0.5))
+		3:  # Interior
+			Global.selected_country["stability"] = clamp(Global.selected_country.get("stability", 50) + 3, 5, 100)
+			_add_event("🏛️ Interior Minister: +3 stability!", Color(0.3, 0.9, 0.5))
+
+	_update_stats()
+
 func _on_next_month():
 	if popup_open:
 		return
+
+	for i in range(minister_cooldowns.size()):
+		if minister_cooldowns[i] > 0:
+			minister_cooldowns[i] -= 1
 
 	Global.game_date["month"] += 1
 	Global.months_in_power += 1
@@ -600,6 +665,7 @@ func _on_next_month():
 	Global.approval = clamp(Global.approval, 0, 100)
 
 	_simulate_ai_countries()
+	_simulate_ai_diplomacy()
 	_maybe_trigger_ai_event()
 	_update_stats()
 	_update_minister_reports()
@@ -624,6 +690,19 @@ func _on_next_month():
 	if Global.at_war:
 		Global.war_months += 1
 		Global.treasury -= 20
+
+		var morale_loss = 1 + max(0, (50 - Global.approval) / 20.0)
+		Global.selected_country["military"] = clamp(
+			Global.selected_country.get("military", 50) - morale_loss, 5, 100)
+
+		if Global.war_months > 3:
+			Global.approval = clamp(Global.approval - 2, 0, 100)
+
+		if Global.approval < 30 and randf() < 0.5:
+			_add_event("⚠️ Military mutiny! Troops refuse to fight. War forced to end.", Color(0.95, 0.2, 0.2))
+			_resolve_war(true)
+			return
+
 		_add_event("⚔️ War ongoing — Month " + str(Global.war_months) + ". Upkeep: -$20B", Color(0.9, 0.4, 0.3))
 		_update_stats()
 		if Global.war_months >= 6:
@@ -635,7 +714,10 @@ func _on_next_month():
 		return
 
 	# Normal month — decision or news, never both
-	if Global.game_date["month"] % 2 == 0:
+	var difficulty = _get_difficulty_multiplier()
+	var decision_frequency = 2.0 / difficulty
+
+	if Global.game_date["month"] % int(ceil(decision_frequency)) == 0:
 		_show_decision()
 	elif Global.game_date["month"] % 3 == 0:
 		_fetch_news()
@@ -647,13 +729,18 @@ func _update_stats():
 				"approval": stats_labels[key].text = str(Global.approval)
 				"treasury": stats_labels[key].text = str(Global.treasury)
 				"stability": stats_labels[key].text = str(Global.selected_country.get("stability", 0))
+				"gdp": stats_labels[key].text = str(Global.selected_country.get("gdp", 0))
+				"military": stats_labels[key].text = str(Global.selected_country.get("military", 0))
+				"population": stats_labels[key].text = str(Global.selected_country.get("population", 0))
 
 func _update_minister_reports():
 	for i in range(4):
 		var lbl = find_child("MinReport" + str(i), true, false)
 		if lbl and is_instance_valid(lbl):
-			var reports = MINISTER_REPORTS[MINISTER_ROLES[i]]
-			lbl.text = reports[randi() % reports.size()]
+			if i < MINISTER_ROLES.size():
+				var reports = MINISTER_REPORTS.get(MINISTER_ROLES[i], [])
+				if reports.size() > 0:
+					lbl.text = reports[randi() % reports.size()]
 
 func _add_event(text: String, color: Color = Color(0.72, 0.72, 0.86)):
 	if not event_log_node or not is_instance_valid(event_log_node):
@@ -730,6 +817,69 @@ func _build_decision_panel():
 	choices_vbox.add_theme_constant_override("separation", 8)
 	vbox.add_child(choices_vbox)
 
+func _get_difficulty_multiplier() -> float:
+	var months = Global.months_in_power
+	if months < 48:
+		return 1.0
+	elif months < 96:
+		return 1.2
+	else:
+		return 1.5
+
+func _get_decision_category(decision: Dictionary) -> String:
+	var avg_effects = {"treasury": 0, "approval": 0, "military": 0, "stability": 0, "gdp": 0}
+	for choice in decision["choices"]:
+		for key in choice["effects"]:
+			avg_effects[key] = avg_effects.get(key, 0) + choice["effects"][key]
+	for key in avg_effects:
+		avg_effects[key] /= decision["choices"].size()
+
+	var max_effect = 0.0
+	var max_key = "stability"
+	for key in avg_effects:
+		if abs(avg_effects[key]) > max_effect:
+			max_effect = abs(avg_effects[key])
+			max_key = key
+	return max_key
+
+func _select_weighted_decision() -> Dictionary:
+	var weights = {}
+	var treasury = Global.treasury
+	var approval = Global.approval
+	var military = Global.selected_country.get("military", 50)
+	var stability = Global.selected_country.get("stability", 50)
+	var difficulty = _get_difficulty_multiplier()
+
+	for i in range(DECISIONS.size()):
+		var decision = DECISIONS[i]
+		var category = _get_decision_category(decision)
+		var weight = 1.0
+
+		match category:
+			"treasury":
+				weight = 0.2 if treasury > 300 else (1.5 if treasury < 150 else 1.0)
+			"approval":
+				weight = 1.5 if approval < 40 else (0.5 if approval > 75 else 1.0)
+			"military":
+				weight = 1.5 if military < 40 else (0.5 if military > 85 else 1.0)
+			"stability":
+				weight = 1.5 if stability < 40 else (0.5 if stability > 80 else 1.0)
+
+		weights[i] = weight * difficulty
+
+	var total_weight = 0.0
+	for w in weights.values():
+		total_weight += w
+
+	var roll = randf() * total_weight
+	var cumulative = 0.0
+	for idx in weights.keys():
+		cumulative += weights[idx]
+		if roll <= cumulative:
+			return DECISIONS[idx]
+
+	return DECISIONS[randi() % DECISIONS.size()]
+
 func _show_decision():
 	if popup_open:
 		return
@@ -745,7 +895,7 @@ func _show_decision():
 		popup_open = false
 		return
 
-	var decision = DECISIONS[randi() % DECISIONS.size()]
+	var decision = _select_weighted_decision()
 	title_lbl.text = decision["title"]
 	desc_lbl.text = decision["description"]
 
@@ -763,13 +913,13 @@ func _show_decision():
 			var val_sign = "+" if val > 0 else ""
 			effects_text += "  " + key.capitalize() + ": " + val_sign + str(val)
 		btn.tooltip_text = effects_text.strip_edges()
-		btn.pressed.connect(_on_decision_chosen.bind(choice["effects"], overlay))
+		btn.pressed.connect(_on_decision_chosen.bind(choice["effects"], overlay, decision["title"]))
 		choices_box.add_child(btn)
 
 	overlay.visible = true
 	panel.visible = true
 
-func _on_decision_chosen(effects: Dictionary, overlay: ColorRect):
+func _on_decision_chosen(effects: Dictionary, overlay: ColorRect, decision_title: String):
 	popup_open = false
 	if is_instance_valid(overlay):
 		overlay.visible = false
@@ -777,24 +927,24 @@ func _on_decision_chosen(effects: Dictionary, overlay: ColorRect):
 	if panel:
 		panel.visible = false
 
+	Global.last_decisions.append(decision_title)
+	if Global.last_decisions.size() > 3:
+		Global.last_decisions.pop_front()
+
+	_apply_effects(effects)
+
+	var consequence_msg = "Decision made: " + decision_title + " → "
+	var changes = []
 	for key in effects:
-		match key:
-			"treasury": Global.treasury += effects[key]
-			"approval":
-				Global.approval += effects[key]
-				Global.approval = clamp(Global.approval, 0, 100)
-			"stability":
-				Global.selected_country["stability"] = clamp(
-					Global.selected_country.get("stability", 50) + effects[key], 0, 100)
-			"military":
-				Global.selected_country["military"] = clamp(
-					Global.selected_country.get("military", 50) + effects[key], 0, 100)
-			"gdp":
-				Global.selected_country["gdp"] = clamp(
-					Global.selected_country.get("gdp", 50) + effects[key], 0, 100)
+		var val = effects[key]
+		if val > 0:
+			changes.append("+" + str(val) + " " + key.capitalize())
+		elif val < 0:
+			changes.append(str(val) + " " + key.capitalize())
+	consequence_msg += " | ".join(changes)
 
 	_update_stats()
-	_add_event("Decision made. Effects applied.", Color(0.9, 0.8, 0.4))
+	_add_event(consequence_msg, Color(0.95, 0.85, 0.4))
 
 # ─── ELECTIONS ───────────────────────────────────────────
 
@@ -917,8 +1067,6 @@ func _on_election_continue():
 		_trigger_game_over("You lost the election.")
 
 func _trigger_game_over(reason: String):
-	if http_request and is_instance_valid(http_request):
-		http_request.cancel_request()
 	var years = int(Global.months_in_power / 12.0)
 	var scene = load("res://GameOver.tscn").instantiate()
 	get_tree().root.add_child(scene)
@@ -1029,12 +1177,47 @@ func _simulate_ai_countries():
 		country["military"] = clamp(country["military"] + randi_range(-1, 2), 5, 100)
 		country["stability"] = clamp(country["stability"] + randi_range(-3, 2), 5, 100)
 
+func _simulate_ai_diplomacy():
+	if randi() % 4 != 0:
+		return
+
+	if COUNTRY_PINS.size() < 2:
+		return
+
+	var other_countries = COUNTRY_PINS.filter(func(c): return c["name"] != Global.selected_country.get("name", ""))
+	if other_countries.size() < 2:
+		return
+
+	other_countries.shuffle()
+	var country_a = other_countries[0]["name"]
+	var country_b = other_countries[1]["name"]
+
+	var key = country_a if country_a < country_b else country_b
+	var counterkey = country_b if country_a < country_b else country_a
+
+	if not Global.ai_relationships.has(key):
+		Global.ai_relationships[key] = {}
+
+	var ally_chance = 0.3
+	var alliance_exists = Global.ai_relationships[key].get(counterkey, {}).get("alliance", false)
+
+	if not alliance_exists and randf() < ally_chance:
+		Global.ai_relationships[key][counterkey] = {"alliance": true, "trade": randi_range(30, 70)}
+		_add_event("🤝 " + country_a + " and " + country_b + " form an alliance.", Color(0.75, 0.9, 0.75))
+
 func _maybe_trigger_ai_event():
 	if randi() % 3 != 0:
 		return
 
+	if AI_EVENTS.size() == 0:
+		return
+
 	var event = AI_EVENTS[randi() % AI_EVENTS.size()]
-	var other_countries = COUNTRY_PINS.filter(func(c): return c["name"] != Global.selected_country["name"])
+
+	if COUNTRY_PINS.size() < 2:
+		return
+
+	var other_countries = COUNTRY_PINS.filter(func(c): return c["name"] != Global.selected_country.get("name", ""))
 	if other_countries.size() < 2:
 		return
 
@@ -1045,77 +1228,64 @@ func _maybe_trigger_ai_event():
 	var msg = event["msg"].replace("{A}", country_a).replace("{B}", country_b)
 	_add_event(msg, Color(0.85, 0.75, 0.4))
 
-	for key in event["effects"]:
-		match key:
-			"treasury": Global.treasury += event["effects"][key]
-			"approval":
-				Global.approval = clamp(Global.approval + event["effects"][key], 0, 100)
-			"stability":
-				Global.selected_country["stability"] = clamp(
-					Global.selected_country.get("stability", 50) + event["effects"][key], 0, 100)
-			"gdp":
-				Global.selected_country["gdp"] = clamp(
-					Global.selected_country.get("gdp", 50) + event["effects"][key], 0, 100)
-			"military":
-				Global.selected_country["military"] = clamp(
-					Global.selected_country.get("military", 50) + event["effects"][key], 0, 100)
-
+	_apply_effects(event["effects"])
 	_update_stats()
 
 # ─── NEWS SYSTEM ─────────────────────────────────────────
 
+# ─── NEWS SYSTEM ─────────────────────────────────────────
+
 func _build_news_system():
-	http_request = HTTPRequest.new()
-	add_child(http_request)
-	http_request.request_completed.connect(_on_news_fetched)
+	pass
 
 func _fetch_news():
-	if not http_request:
-		return
-	if http_request.get_http_client_status() != HTTPClient.STATUS_DISCONNECTED:
-		return
-	var url = "https://feeds.bbci.co.uk/news/world/rss.xml"
-	var err = http_request.request(url)
-	if err != OK:
-		_add_event("📡 News feed unavailable.", Color(0.5, 0.5, 0.6))
+	var events = _generate_procedural_news()
+	for e in events:
+		_add_event(e["msg"], Color(0.95, 0.85, 0.4))
+		_apply_effects(e["effects"])
+	if events.is_empty():
+		_add_event("📰 World monitors. No major incidents.", Color(0.5, 0.5, 0.6))
 
-func _on_news_fetched(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray):
-	if not is_inside_tree():
-		return
-	if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
-		_add_event("📡 Could not reach news feed.", Color(0.5, 0.5, 0.6))
-		return
+func _generate_procedural_news() -> Array:
+	var results = []
+	var pool = []
+	if Global.treasury < 200:
+		pool.append({"msg": "📉 Global recession fears hit emerging markets.", "effects": {"treasury": -30, "gdp": -2}})
+		pool.append({"msg": "💸 IMF warns of global debt spiral. Borrowing costs rise.", "effects": {"treasury": -40, "approval": -2}})
+	if Global.selected_country.get("military", 50) > 70:
+		pool.append({"msg": "🚀 Regional arms race escalates. Your military is watched.", "effects": {"military": 2, "approval": -2}})
+	if Global.selected_country.get("gdp", 50) > 70:
+		pool.append({"msg": "📈 Global tech markets surge. Strong economies benefit.", "effects": {"treasury": 25, "gdp": 3}})
+	if Global.approval < 40:
+		pool.append({"msg": "📰 International media covers unrest in your country.", "effects": {"approval": -3, "stability": -2}})
+	pool.append_array([
+		{"msg": "⚔️ Military conflict abroad rattles global markets.", "effects": {"stability": -4, "military": -2}},
+		{"msg": "🤝 Major peace deal signed. Markets rally globally.", "effects": {"stability": 4, "treasury": 15}},
+		{"msg": "🛢️ Oil price spike shocks energy-dependent economies.", "effects": {"treasury": -20, "approval": -3}},
+		{"msg": "🌿 Climate summit reaches landmark emissions agreement.", "effects": {"approval": 3, "stability": 2}},
+		{"msg": "💻 Global AI boom drives productivity across economies.", "effects": {"gdp": 3, "treasury": 20}},
+		{"msg": "🦠 Disease outbreak prompts travel disruptions worldwide.", "effects": {"treasury": -30, "approval": -3, "stability": -3}},
+		{"msg": "📦 Supply chain crisis hits global trade flows.", "effects": {"treasury": -25, "gdp": -2}},
+		{"msg": "🗳️ Shock election results destabilise a major regional power.", "effects": {"stability": -3}},
+		{"msg": "🏦 Central banks raise rates. Debt becomes more expensive.", "effects": {"treasury": -20, "gdp": -1}},
+		{"msg": "🚶 Migration wave creates political pressure across borders.", "effects": {"approval": -3, "stability": -2}},
+	])
+	pool.shuffle()
+	var count = 1 if randi() % 100 < 60 else 2
+	for i in range(min(count, pool.size())):
+		results.append(pool[i])
+	return results
 
-	var text = body.get_string_from_utf8().to_lower()
-	var matched = false
-
-	for event in NEWS_EVENTS:
-		for keyword in event["keywords"]:
-			if keyword in text:
-				_add_event(event["msg"], Color(0.95, 0.85, 0.4))
-				for key in event["effects"]:
-					match key:
-						"treasury": Global.treasury += event["effects"][key]
-						"approval":
-							Global.approval = clamp(Global.approval + event["effects"][key], 0, 100)
-						"stability":
-							Global.selected_country["stability"] = clamp(
-								Global.selected_country.get("stability", 50) + event["effects"][key], 0, 100)
-						"gdp":
-							Global.selected_country["gdp"] = clamp(
-								Global.selected_country.get("gdp", 50) + event["effects"][key], 0, 100)
-						"military":
-							Global.selected_country["military"] = clamp(
-								Global.selected_country.get("military", 50) + event["effects"][key], 0, 100)
-				_update_stats()
-				matched = true
-				break
-		if matched:
-			break
-
-	if not matched:
-		_add_event("📰 World news monitored. No major impact today.", Color(0.5, 0.5, 0.6))
-
+func _apply_effects(effects: Dictionary):
+	for key in effects:
+		var val = effects[key]
+		match key:
+			"treasury": Global.treasury += val
+			"approval": Global.approval = clamp(Global.approval + val, 0, 100)
+			"stability": Global.selected_country["stability"] = clamp(Global.selected_country.get("stability", 50) + val, 0, 100)
+			"gdp": Global.selected_country["gdp"] = clamp(Global.selected_country.get("gdp", 50) + val, 0, 100)
+			"military": Global.selected_country["military"] = clamp(Global.selected_country.get("military", 50) + val, 0, 100)
+	_update_stats()
 # ─── WAR SYSTEM ──────────────────────────────────────────
 
 func _on_declare_war():
@@ -1370,3 +1540,337 @@ func _resolve_war(negotiated: bool):
 	Global.war_months = 0
 	Global.war_score = 0
 	_update_stats()
+
+func _build_briefing_panel():
+	var overlay = ColorRect.new()
+	overlay.name = "BriefingOverlay"
+	overlay.color = Color(0, 0, 0, 0.88)
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.visible = false
+	add_child(overlay)
+
+	var panel = PanelContainer.new()
+	panel.name = "BriefingPanel"
+	panel.visible = false
+	panel.position = Vector2(480, 100)
+	panel.size = Vector2(960, 880)
+	var style = StyleBoxFlat.new()
+	style.bg_color = Color(0.08, 0.10, 0.18, 1.0)
+	style.border_color = Color(0.6, 0.7, 0.9)
+	style.set_border_width_all(2)
+	style.set_corner_radius_all(10)
+	panel.add_theme_stylebox_override("panel", style)
+	add_child(panel)
+
+	var vbox = VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 14)
+	panel.add_child(vbox)
+
+	var header = Label.new()
+	header.text = "📋  MONTHLY BRIEFING"
+	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	header.add_theme_font_size_override("font_size", 22)
+	header.add_theme_color_override("font_color", Color(0.95, 0.85, 0.4))
+	vbox.add_child(header)
+
+	vbox.add_child(HSeparator.new())
+
+	var content = VBoxContainer.new()
+	content.name = "BriefingContent"
+	content.add_theme_constant_override("separation", 10)
+	vbox.add_child(content)
+
+	vbox.add_child(HSeparator.new())
+
+	var close_btn = Button.new()
+	close_btn.text = "✕  CLOSE"
+	close_btn.custom_minimum_size = Vector2(0, 40)
+	close_btn.add_theme_font_size_override("font_size", 14)
+	close_btn.pressed.connect(func():
+		find_child("BriefingOverlay", true, false).visible = false
+		find_child("BriefingPanel", true, false).visible = false
+	)
+	vbox.add_child(close_btn)
+
+func _show_briefing():
+	var overlay = find_child("BriefingOverlay", true, false)
+	var panel = find_child("BriefingPanel", true, false)
+	var content = find_child("BriefingContent", true, false)
+
+	if not overlay or not panel or not content:
+		_build_briefing_panel()
+		overlay = find_child("BriefingOverlay", true, false)
+		panel = find_child("BriefingPanel", true, false)
+		content = find_child("BriefingContent", true, false)
+
+	for child in content.get_children():
+		child.queue_free()
+
+	var date_str = _get_date_string()
+	var month_label = Label.new()
+	month_label.text = "📅 " + date_str
+	month_label.add_theme_font_size_override("font_size", 16)
+	month_label.add_theme_color_override("font_color", Color(0.9, 0.8, 0.4))
+	content.add_child(month_label)
+
+	var situation = _get_situation_briefing()
+	var situation_label = Label.new()
+	situation_label.text = situation
+	situation_label.add_theme_font_size_override("font_size", 12)
+	situation_label.add_theme_color_override("font_color", Color(0.75, 0.75, 0.88))
+	situation_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	content.add_child(situation_label)
+
+	content.add_child(HSeparator.new())
+
+	var advice_title = Label.new()
+	advice_title.text = "Chief of Staff Recommendations:"
+	advice_title.add_theme_font_size_override("font_size", 12)
+	advice_title.add_theme_color_override("font_color", Color(0.6, 0.75, 0.95))
+	content.add_child(advice_title)
+
+	var advice = _get_chief_of_staff_advice()
+	for tip in advice:
+		var tip_label = Label.new()
+		tip_label.text = "→ " + tip
+		tip_label.add_theme_font_size_override("font_size", 11)
+		tip_label.add_theme_color_override("font_color", Color(0.7, 0.8, 0.9))
+		tip_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		content.add_child(tip_label)
+
+	content.add_child(HSeparator.new())
+
+	var consequences_title = Label.new()
+	consequences_title.text = "Decision Consequences:"
+	consequences_title.add_theme_font_size_override("font_size", 12)
+	consequences_title.add_theme_color_override("font_color", Color(0.95, 0.75, 0.6))
+	content.add_child(consequences_title)
+
+	if Global.last_decisions.size() > 0:
+		for i in range(min(3, Global.last_decisions.size())):
+			var decision = Global.last_decisions[-(i+1)]
+			var consequence_label = Label.new()
+			consequence_label.text = "• " + decision + " (Month " + str(Global.months_in_power - i) + ")"
+			consequence_label.add_theme_font_size_override("font_size", 11)
+			consequence_label.add_theme_color_override("font_color", Color(0.8, 0.75, 0.65))
+			consequence_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			content.add_child(consequence_label)
+	else:
+		var no_decisions = Label.new()
+		no_decisions.text = "No decisions made yet."
+		no_decisions.add_theme_font_size_override("font_size", 11)
+		no_decisions.add_theme_color_override("font_color", Color(0.6, 0.6, 0.65))
+		content.add_child(no_decisions)
+
+	overlay.visible = true
+	panel.visible = true
+
+func _get_situation_briefing() -> String:
+	var approval = Global.approval
+	var treasury = Global.treasury
+	var months = Global.months_in_power
+	var military = Global.selected_country.get("military", 50)
+	var stability = Global.selected_country.get("stability", 50)
+
+	var brief = ""
+
+	if approval > 70:
+		brief += "Public morale is excellent. "
+	elif approval > 50:
+		brief += "Public approval is stable. "
+	elif approval > 30:
+		brief += "Approval is sliding. Citizens are becoming critical. "
+	else:
+		brief += "CRITICAL: Approval has collapsed! Unrest is widespread. "
+
+	if treasury > 500:
+		brief += "Treasury is healthy. "
+	elif treasury > 100:
+		brief += "Treasury is adequate. "
+	elif treasury > 0:
+		brief += "Treasury is low. Consider cost-cutting. "
+	else:
+		brief += "CRITICAL: Budget is in deficit! Immediate action needed. "
+
+	if military > 75:
+		brief += "Military strength is dominant. "
+	elif military > 40:
+		brief += "Military capability is moderate. "
+	else:
+		brief += "Military is underfunded and weakening. "
+
+	if stability > 75:
+		brief += "The nation is stable."
+	elif stability > 40:
+		brief += "Social stability is moderate."
+	else:
+		brief += "ALERT: Social stability is critical. Unrest imminent."
+
+	return brief
+
+func _get_chief_of_staff_advice() -> Array:
+	var advice = []
+	var approval = Global.approval
+	var treasury = Global.treasury
+	var months = Global.months_in_power
+	var months_to_election = 48 - (months % 48)
+
+	if approval < 40:
+		advice.append("Approval is dangerously low. Approve popular decisions immediately.")
+	if approval > 75:
+		advice.append("High approval gives you political capital—consider bold reforms.")
+	if treasury < 50:
+		advice.append("Treasury is critical. Generate income through trade or cut spending.")
+	if treasury > 400:
+		advice.append("You have surplus capital. Consider investment in infrastructure or military.")
+	if months_to_election < 12:
+		advice.append("Election is less than a year away! Focus on popularity now.")
+	if Global.at_war:
+		advice.append("War is draining resources. Plan an exit strategy or commit fully.")
+	if not Global.at_war and Global.selected_country.get("military", 50) < 30:
+		advice.append("Military is weak. Consider rebuilding capacity before rivals attack.")
+
+	if advice.size() == 0:
+		advice.append("Maintain current course. All systems nominal.")
+
+	return advice
+
+
+# ─── MINISTER CONSULTATION ───────────────────────────────
+
+func _consult_minister(index: int):
+	if popup_open:
+		_add_event("⚠️ Close current decision first.", Color(0.9, 0.5, 0.3))
+		return
+	var role = MINISTER_ROLES[index]
+	var cooldown_key = "minister_cooldown_" + str(index)
+	var last_use = Global.selected_country.get(cooldown_key, -12)
+	if Global.months_in_power - last_use < 6:
+		var wait = 6 - (Global.months_in_power - last_use)
+		_add_event("⏳ " + role + " minister unavailable for " + str(wait) + " more months.", Color(0.7, 0.7, 0.5))
+		return
+	Global.selected_country[cooldown_key] = Global.months_in_power
+	match role:
+		"Finance":
+			var bonus = randi_range(30, 80)
+			Global.treasury += bonus
+			_add_event("💰 Finance minister secured emergency funds. +$" + str(bonus) + "B", Color(0.3, 0.9, 0.5))
+		"Defense":
+			var mil_boost = randi_range(3, 8)
+			Global.selected_country["military"] = min(100, Global.selected_country.get("military", 50) + mil_boost)
+			_add_event("⚔️ Defense minister fast-tracked upgrades. +" + str(mil_boost) + " Military", Color(0.9, 0.6, 0.3))
+		"Foreign Affairs":
+			var stab_boost = randi_range(3, 7)
+			Global.selected_country["stability"] = min(100, Global.selected_country.get("stability", 50) + stab_boost)
+			_add_event("🌐 Foreign Affairs secured a regional agreement. +" + str(stab_boost) + " Stability", Color(0.4, 0.7, 0.9))
+		"Interior":
+			var app_boost = randi_range(4, 10)
+			Global.approval = min(100, Global.approval + app_boost)
+			_add_event("🏛 Interior minister ran a public campaign. +" + str(app_boost) + " Approval", Color(0.7, 0.9, 0.4))
+	_update_stats()
+
+# ─── SAVE / LOAD ─────────────────────────────────────────
+
+func _build_save_ui():
+	var save_btn = Button.new()
+	save_btn.text = "💾"
+	save_btn.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	save_btn.offset_left = -315
+	save_btn.offset_top = 8
+	save_btn.offset_right = -255
+	save_btn.offset_bottom = 47
+	save_btn.tooltip_text = "Save / Load"
+	save_btn.add_theme_font_size_override("font_size", 14)
+	save_btn.pressed.connect(_show_save_panel)
+	add_child(save_btn)
+
+	var overlay = ColorRect.new()
+	overlay.name = "SaveOverlay"
+	overlay.color = Color(0, 0, 0, 0.85)
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.visible = false
+	add_child(overlay)
+
+	var panel = PanelContainer.new()
+	panel.name = "SavePanel"
+	panel.visible = false
+	panel.position = Vector2(660, 220)
+	panel.size = Vector2(600, 400)
+	var style = StyleBoxFlat.new()
+	style.bg_color = Color(0.08, 0.10, 0.18, 1.0)
+	style.border_color = Color(0.35, 0.4, 0.6)
+	style.set_border_width_all(2)
+	style.set_corner_radius_all(8)
+	panel.add_theme_stylebox_override("panel", style)
+	add_child(panel)
+
+	var vbox = VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 12)
+	panel.add_child(vbox)
+
+	var header = Label.new()
+	header.text = "💾  SAVE / LOAD"
+	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	header.add_theme_font_size_override("font_size", 20)
+	header.add_theme_color_override("font_color", Color(0.9, 0.8, 0.4))
+	vbox.add_child(header)
+	vbox.add_child(HSeparator.new())
+
+	for i in range(SaveManager.MAX_SLOTS):
+		var row = HBoxContainer.new()
+		row.add_theme_constant_override("separation", 8)
+		vbox.add_child(row)
+
+		var info = Label.new()
+		info.name = "SaveSlotInfo" + str(i)
+		info.text = "Slot " + str(i + 1) + ": " + SaveManager.get_slot_info(i)
+		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		info.add_theme_font_size_override("font_size", 13)
+		info.add_theme_color_override("font_color", Color(0.7, 0.7, 0.85))
+		row.add_child(info)
+
+		var save_slot_btn = Button.new()
+		save_slot_btn.text = "Save"
+		save_slot_btn.custom_minimum_size = Vector2(70, 0)
+		save_slot_btn.pressed.connect(_do_save.bind(i))
+		row.add_child(save_slot_btn)
+
+		if SaveManager.slot_exists(i):
+			var load_slot_btn = Button.new()
+			load_slot_btn.text = "Load"
+			load_slot_btn.custom_minimum_size = Vector2(70, 0)
+			load_slot_btn.pressed.connect(_do_load.bind(i))
+			row.add_child(load_slot_btn)
+
+	vbox.add_child(HSeparator.new())
+	var close_btn = Button.new()
+	close_btn.text = "✕  CLOSE"
+	close_btn.pressed.connect(func():
+		_safe_find("SaveOverlay").visible = false
+		_safe_find("SavePanel").visible = false
+		popup_open = false
+	)
+	vbox.add_child(close_btn)
+
+func _show_save_panel():
+	if popup_open:
+		return
+	popup_open = true
+	_safe_find("SaveOverlay").visible = true
+	_safe_find("SavePanel").visible = true
+
+func _do_save(slot: int):
+	SaveManager.save_game(slot)
+	var info = _safe_find("SaveSlotInfo" + str(slot))
+	if info:
+		info.text = "Slot " + str(slot + 1) + ": " + SaveManager.get_slot_info(slot)
+	_add_event("💾 Game saved to slot " + str(slot + 1), Color(0.4, 0.9, 0.5))
+
+func _do_load(slot: int):
+	if SaveManager.load_game(slot):
+		_safe_find("SaveOverlay").visible = false
+		_safe_find("SavePanel").visible = false
+		popup_open = false
+		get_tree().change_scene_to_file("res://Maingame.tscn")
+	else:
+		_add_event("⚠️ Failed to load save.", Color(0.9, 0.4, 0.3))

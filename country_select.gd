@@ -12,6 +12,7 @@ const COUNTRIES = [
 ]
 
 var selected_country = null
+var start_button: Button
 
 func _ready():
 	_build_ui()
@@ -58,18 +59,38 @@ func _build_ui():
 	for country in COUNTRIES:
 		grid.add_child(_make_card(country))
 
+	var btn_container = HBoxContainer.new()
+	btn_container.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	btn_container.offset_top = -78
+	btn_container.offset_bottom = -22
+	btn_container.offset_left = 200
+	btn_container.offset_right = -200
+	btn_container.add_theme_constant_override("separation", 20)
+	btn_container.alignment = BoxContainer.ALIGNMENT_CENTER
+	add_child(btn_container)
+
+	var back_btn = Button.new()
+	back_btn.text = "← BACK"
+	back_btn.custom_minimum_size = Vector2(200, 56)
+	back_btn.add_theme_font_size_override("font_size", 16)
+	var back_style = StyleBoxFlat.new()
+	back_style.bg_color = Color(0.15, 0.15, 0.22)
+	back_style.border_color = Color(0.28, 0.28, 0.38)
+	back_style.set_border_width_all(1)
+	back_style.set_corner_radius_all(6)
+	back_btn.add_theme_stylebox_override("normal", back_style)
+	back_btn.pressed.connect(_on_back)
+	btn_container.add_child(back_btn)
+
 	var start_btn = Button.new()
 	start_btn.name = "StartButton"
 	start_btn.text = "SELECT A COUNTRY TO BEGIN"
-	start_btn.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	start_btn.offset_top = -78
-	start_btn.offset_bottom = -22
-	start_btn.offset_left = 550
-	start_btn.offset_right = -550
+	start_btn.custom_minimum_size = Vector2(400, 56)
 	start_btn.add_theme_font_size_override("font_size", 18)
 	start_btn.disabled = true
 	start_btn.pressed.connect(_on_start_pressed)
-	add_child(start_btn)
+	btn_container.add_child(start_btn)
+	start_button = start_btn
 
 func _make_card(country: Dictionary) -> PanelContainer:
 	var card = PanelContainer.new()
@@ -150,13 +171,15 @@ func _stat_color(value: int) -> Color:
 	else:
 		return Color(0.8, 0.3, 0.3)
 
-func _on_country_selected(country: Dictionary, _card: PanelContainer):
+func _on_country_selected(country: Dictionary, card: PanelContainer):
 	selected_country = country.duplicate()
-	var btn = get_node("StartButton")
-	btn.text = "▶  LEAD " + country["name"].to_upper()
-	btn.disabled = false
+	start_button.text = "▶  LEAD " + country["name"].to_upper()
+	start_button.disabled = false
 
 func _on_start_pressed():
 	if selected_country:
 		Global.selected_country = selected_country.duplicate()
-		get_tree().change_scene_to_file("res://Maingame.tscn")
+		get_tree().change_scene_to_file("res://MainGameMenu.tscn")
+
+func _on_back():
+	get_tree().change_scene_to_file("res://GameModeSelect.tscn")

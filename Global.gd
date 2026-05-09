@@ -13,6 +13,12 @@ var war_target = {}
 var war_months = 0
 var war_score = 0
 
+# AI relationships
+var ai_relationships = {}
+
+# Decision tracking for consequence chaining
+var last_decisions = []
+
 func reset():
 	selected_country = {}
 	game_date = {"year": 2024, "month": 1}
@@ -24,3 +30,5 @@ func reset():
 	war_target = {}
 	war_months = 0
 	war_score = 0
+	ai_relationships = {}
+	last_decisions = []
